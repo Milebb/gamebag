@@ -419,3 +419,60 @@ h2 {
   width: 100%;
   min-height: 64px;
 }
+
+/* Pong */
+
+.screen.pong {
+  height: calc(100dvh - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom)));
+  gap: 12px;
+}
+
+.pong-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pong-canvas {
+  display: block;
+  touch-action: none;
+  box-shadow: 0 0 0 3px var(--line), 0 0 24px rgba(90, 90, 138, 0.35);
+}
+
+.pong-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  background: rgba(11, 11, 26, 0.85);
+}
+
+.pong-overlay .btn {
+  max-width: 280px;
+}
+
+.pong-result {
+  margin: 0 0 8px;
+  font-size: 16px;
+  line-height: 2;
+  text-align: center;
+  white-space: pre-line;
+  color: var(--yellow);
+  text-shadow: 0 0 12px rgba(255, 225, 77, 0.5);
+}
+
+.hint {
+  margin: 0;
+  font-size: 8px;
+  line-height: 1.6;
+  text-align: center;
+  color: var(--dim);
+}

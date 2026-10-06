@@ -101,7 +101,7 @@ function difficultyScreen(root, game) {
       <nav class="menu">
         <button class="btn" data-difficulty="easy">LAKO</button>
         <button class="btn" data-difficulty="medium">SREDNJE</button>
-        <button class="btn btn-primary" data-difficulty="hard">NEPOBJEDIVO</button>
+        <button class="btn btn-primary" data-difficulty="hard">${game.hardLabel}</button>
       </nav>
       <button class="btn btn-ghost" id="back">&lt; NATRAG</button>
     </main>`,

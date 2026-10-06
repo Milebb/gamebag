@@ -1,9 +1,17 @@
 import { start as startTicTacToe } from './tictactoe/game.js';
+import { start as startPong } from './pong/game.js';
 import { pixelSvg, ICONS } from '../pixel.js';
 
 export const games = [
-  { id: 'ttt', name: 'KRIŽIĆ-KRUŽIĆ', icon: pixelSvg(ICONS.ttt), available: true, start: startTicTacToe },
-  { id: 'pong', name: 'PONG', icon: pixelSvg(ICONS.pong), available: false },
+  {
+    id: 'ttt',
+    name: 'KRIŽIĆ-KRUŽIĆ',
+    icon: pixelSvg(ICONS.ttt),
+    available: true,
+    hardLabel: 'NEPOBJEDIVO',
+    start: startTicTacToe,
+  },
+  { id: 'pong', name: 'PONG', icon: pixelSvg(ICONS.pong), available: true, hardLabel: 'TEŠKO', start: startPong },
   { id: 'invaders', name: 'SVEMIRCI', icon: pixelSvg(ICONS.invader), available: false },
 ];
 
