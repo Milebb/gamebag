@@ -44,6 +44,9 @@ function tone(freq, duration = 0.08, delay = 0, volume = 0.05) {
 
 const melody = (notes, step, duration) => notes.forEach((freq, i) => tone(freq, duration, i * step));
 
+const MARCH = [98, 87, 78, 73];
+let marchStep = 0;
+
 export const sound = {
   click: () => tone(660, 0.04),
   place: (player) => tone(player === 'X' ? 520 : 390, 0.09),
@@ -55,4 +58,9 @@ export const sound = {
   wall: () => tone(310, 0.04, 0, 0.035),
   point: () => melody([660, 990], 0.08, 0.08),
   miss: () => tone(160, 0.3),
+  march: () => tone(MARCH[marchStep++ % MARCH.length], 0.08, 0, 0.07),
+  kill: () => melody([220, 140], 0.04, 0.05),
+  shipHit: () => melody([300, 200, 120], 0.1, 0.12),
+  wave: () => melody([523, 659, 784], 0.08, 0.1),
+  fire: () => tone(880, 0.03, 0, 0.03),
 };

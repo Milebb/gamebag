@@ -1,7 +1,7 @@
 ﻿import '@fontsource/press-start-2p';
 import './style.css';
 import QRCode from 'qrcode';
-import { games, getGame } from './games/index.js';
+import { games, getGame, DEFAULT_MODES } from './games/index.js';
 import { createRoom, joinRoom, normalizeCode, isValidCode } from './net.js';
 import { sound, isMuted, setMuted } from './sound.js';
 
@@ -74,22 +74,31 @@ function homeScreen(root) {
 }
 
 function modeScreen(root, game) {
+  const modes = game.modes ?? DEFAULT_MODES;
   const $ = render(
     root,
     `<main class="screen">
       ${game.icon.replace('pixel-icon', 'pixel-icon big')}
       <h2>${game.name}</h2>
       <nav class="menu">
-        <button class="btn" id="ai">SAM PROTIV RAČUNALA</button>
-        <button class="btn" id="local">DVOJE NA JEDNOM MOBITELU</button>
-        <button class="btn btn-primary" id="online">ONLINE S PRIJATELJEM</button>
+        ${modes
+          .map(
+            (option, i) =>
+              `<button class="btn ${option.mode === 'online' ? 'btn-primary' : ''}" data-mode="${i}">${option.label}</button>`,
+          )
+          .join('')}
       </nav>
       <button class="btn btn-ghost" id="back">&lt; NATRAG</button>
     </main>`,
   );
-  onClick($('#ai'), () => show(difficultyScreen, game));
-  onClick($('#local'), () => startGame(game, { mode: 'local' }));
-  onClick($('#online'), () => show(onlineScreen, game));
+  root.querySelectorAll('[data-mode]').forEach((button) => {
+    const { mode, variant } = modes[Number(button.dataset.mode)];
+    onClick(button, () => {
+      if (mode === 'ai') show(difficultyScreen, game);
+      else if (mode === 'local') startGame(game, { mode: 'local' });
+      else show(onlineScreen, game, variant);
+    });
+  });
   onClick($('#back'), () => show(homeScreen));
 }
 
@@ -112,7 +121,7 @@ function difficultyScreen(root, game) {
   onClick($('#back'), () => show(modeScreen, game));
 }
 
-function onlineScreen(root, game) {
+function onlineScreen(root, game, variant) {
   const $ = render(
     root,
     `<main class="screen">
@@ -141,7 +150,7 @@ function onlineScreen(root, game) {
     }
     show(joinScreen, code);
   });
-  onClick($('#host'), () => show(hostScreen, game));
+  onClick($('#host'), () => show(hostScreen, game, variant));
   onClick($('#back'), () => show(modeScreen, game));
 }
 
@@ -163,7 +172,7 @@ async function shareRoom(code, link, flash) {
   }
 }
 
-function hostScreen(root, game) {
+function hostScreen(root, game, variant) {
   const $ = render(
     root,
     `<main class="screen">
@@ -206,8 +215,8 @@ function hostScreen(root, game) {
     onConnect(net) {
       handedOff = true;
       sound.join();
-      net.send({ t: 'hello', game: game.id });
-      startGame(game, { mode: 'online', net, isHost: true });
+      net.send({ t: 'hello', game: game.id, variant });
+      startGame(game, { mode: 'online', variant, net, isHost: true });
     },
     onError(message) {
       status.classList.remove('blink');
@@ -217,7 +226,7 @@ function hostScreen(root, game) {
   });
 
   shareBtn.addEventListener('click', () => roomCode && shareRoom(roomCode, roomLink, flash));
-  onClick($('#back'), () => show(onlineScreen, game));
+  onClick($('#back'), () => show(onlineScreen, game, variant));
 
   return () => {
     if (!handedOff) room.cancel();
@@ -256,7 +265,7 @@ function joinScreen(root, code) {
         if (!game) return showError('Prijatelj igra igru koju nemaš. Osvježi stranicu.');
         started = true;
         sound.join();
-        startGame(game, { mode: 'online', net: connection, isHost: false });
+        startGame(game, { mode: 'online', variant: msg.variant, net: connection, isHost: false });
       });
     },
     onError: showError,
