@@ -70,6 +70,8 @@ function describeError(err) {
       return 'Ovaj preglednik ne podržava online igru.';
     case 'timeout':
       return 'Spajanje traje predugo. Pokušaj ponovno.';
+    case 'closed':
+      return 'Veza je prekinuta. Pokušaj ponovno.';
     case 'ice-failed':
     case 'negotiation-failed':
       return 'Ne mogu se spojiti s prijateljem. Mreža blokira izravnu vezu. Pokušajte oboje biti na istom Wi-Fi-ju.';
@@ -105,7 +107,7 @@ async function describeRoute(pc) {
  * diagnostic line and calls onFail if ICE fails or the channel doesn't open within
  * ICE_OPEN_MS of the offer/answer exchange.
  */
-function watchIce(conn, { onDiag, onFail }) {
+function watchIce(conn, { onDiag, onFail, onAnswer }) {
   const pc = conn.peerConnection;
   if (!pc) return;
   const states = [];
@@ -137,6 +139,7 @@ function watchIce(conn, { onDiag, onFail }) {
   };
   const startTimer = () => {
     if (timer || stopped) return;
+    onAnswer?.();
     report();
     timer = setTimeout(() => {
       record('isteklo');
@@ -178,12 +181,11 @@ function watchIce(conn, { onDiag, onFail }) {
  * send(msg), setHandler(fn), onClose(fn), close().
  * Messages that arrive before a handler is set are queued.
  */
-function wrapConnection(conn, peer) {
+function wrapConnection(conn, peer, queue = []) {
   let handler = null;
   let closeHandler = null;
   let closed = false;
   let lastSeen = Date.now();
-  const queue = [];
 
   const deliver = () => {
     while (handler && queue.length) handler(queue.shift());
@@ -207,7 +209,7 @@ function wrapConnection(conn, peer) {
 
   conn.on('data', (msg) => {
     lastSeen = Date.now();
-    if (!msg || msg.t === 'ping') return;
+    if (!msg || msg.t === 'ping' || msg.t === 'pick') return;
     queue.push(msg);
     deliver();
   });
@@ -259,10 +261,10 @@ export function createRoom({ onCode, onStatus, onConnect, onError, onDiag }) {
       onCode(code);
     });
 
-    // Offers queued on the server while the room was gone arrive stale and never open,
-    // so the first connection that actually opens wins.
-    // A guest whose network blocks the direct link never opens; drop it and keep waiting so
-    // the guest can retry.
+    // The guest may knock several times and more than one knock can open. The host alone
+    // decides: the first connection that opens wins and is announced with a 'pick' message,
+    // which is the only connection the guest adopts. A guest whose network blocks the direct
+    // link never opens; drop it and keep waiting so the guest can retry.
     current.on('connection', (conn) => {
       if (current !== peer || !active()) return;
       pending.add(conn);
@@ -282,6 +284,7 @@ export function createRoom({ onCode, onStatus, onConnect, onError, onDiag }) {
         pending.forEach((other) => other.close());
         pending.clear();
         stopWatching();
+        conn.send({ t: 'pick' });
         onConnect(wrapConnection(conn, current));
       });
     });
@@ -343,11 +346,11 @@ export function joinRoom(code, { onWaiting, onConnect, onError, onDiag }) {
   let done = false;
   let attempts = [];
   let knocker = null;
+  let hostAnswered = false;
+  const answered = new Set();
   const deadline = Date.now() + HOST_WAIT_MS;
   const peer = new Peer(PEER_OPTIONS);
   const timer = setTimeout(() => fail({ type: 'timeout' }), JOIN_TIMEOUT_MS);
-
-  const answered = () => attempts.some((conn) => conn.peerConnection?.remoteDescription);
 
   function stop() {
     done = true;
@@ -362,31 +365,66 @@ export function joinRoom(code, { onWaiting, onConnect, onError, onDiag }) {
     onError(describeError(err));
   }
 
+  // Only attempts the host never answered are safe to abandon: an answered one may be the
+  // connection the host is about to pick.
+  function drop(conn, err) {
+    if (done || !attempts.includes(conn)) return;
+    attempts = attempts.filter((other) => other !== conn);
+    conn.close();
+    if (hostAnswered && !attempts.length) fail(err);
+  }
+
+  function adopt(conn, firstMessage) {
+    stop();
+    attempts.filter((other) => other !== conn).forEach((other) => other.close());
+    attempts = [];
+    onConnect(wrapConnection(conn, peer, firstMessage.t === 'pick' ? [] : [firstMessage]));
+  }
+
   function connect() {
     if (cancelled || done) return;
     const conn = peer.connect(PREFIX + code, { reliable: true, serialization: 'json' });
     attempts.push(conn);
-    if (attempts.length > KEPT_ATTEMPTS) attempts.shift().close();
+    const unanswered = attempts.filter((other) => !answered.has(other));
+    if (unanswered.length > KEPT_ATTEMPTS) drop(unanswered[0]);
+    let pickTimer = null;
+
     watchIce(conn, {
       onDiag(text) {
-        if (conn === attempts[attempts.length - 1] || conn.peerConnection?.remoteDescription) onDiag?.(text);
+        if (conn === attempts[attempts.length - 1] || answered.has(conn)) onDiag?.(text);
       },
-      onFail: () => attempts.includes(conn) && fail({ type: 'ice-failed' }),
+      onAnswer() {
+        if (done || !attempts.includes(conn)) return;
+        answered.add(conn);
+        hostAnswered = true;
+        clearInterval(knocker);
+        attempts.filter((other) => !answered.has(other)).forEach((other) => drop(other));
+      },
+      onFail: () => drop(conn, { type: 'ice-failed' }),
     });
+    // An open connection the host didn't pick gets closed by the host, so wait for its 'pick'
+    // (or, from an older host version, its first game message).
     conn.on('open', () => {
-      if (cancelled || done) return;
-      stop();
-      attempts.filter((other) => other !== conn).forEach((other) => other.close());
-      attempts = [];
-      onConnect(wrapConnection(conn, peer));
+      pickTimer = setTimeout(() => drop(conn, { type: 'timeout' }), ICE_OPEN_MS);
     });
-    conn.on('error', (err) => attempts.includes(conn) && fail(err));
+    const onData = (msg) => {
+      if (done || !msg || msg.t === 'ping' || !attempts.includes(conn)) return;
+      clearTimeout(pickTimer);
+      conn.off('data', onData);
+      adopt(conn, msg);
+    };
+    conn.on('data', onData);
+    conn.on('close', () => {
+      clearTimeout(pickTimer);
+      drop(conn, { type: 'closed' });
+    });
+    conn.on('error', (err) => drop(conn, err));
   }
 
   // The host may still be in WhatsApp with the room temporarily gone, so keep knocking
   // until it answers; the server reports only the first knock on a missing room.
   function knockAgain() {
-    if (answered()) return;
+    if (hostAnswered) return;
     if (Date.now() >= deadline) return fail({ type: 'host-missing' });
     onWaiting();
     connect();
