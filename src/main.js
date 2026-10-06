@@ -172,6 +172,13 @@ async function shareRoom(text, link, flash) {
   }
 }
 
+const HOST_STATUS = {
+  waiting: 'ČEKAM PRIJATELJA...',
+  reconnecting: 'PONOVNO SPAJANJE...',
+  connecting: 'PRIJATELJ SE SPAJA...',
+  failed: 'VEZA NIJE USPJELA. ČEKAM PRIJATELJA...',
+};
+
 function hostScreen(root, game, option) {
   const { variant } = option;
   const $ = render(
@@ -186,10 +193,12 @@ function hostScreen(root, game, option) {
       <div class="divider">- ILI NEKA SKENIRA / UPIŠE KOD -</div>
       <img class="qr" id="qr" alt="QR kod sobe" hidden />
       <div class="room-code" id="code">· · · · ·</div>
+      <p class="diag" id="diag"></p>
       <button class="btn btn-ghost" id="back">ODUSTANI</button>
     </main>`,
   );
   const status = $('#status');
+  const diag = $('#diag');
   const shareBtn = $('#share');
   const whatsapp = $('#whatsapp');
   let handedOff = false;
@@ -218,7 +227,10 @@ function hostScreen(root, game, option) {
       });
     },
     onStatus(state) {
-      status.textContent = state === 'reconnecting' ? 'PONOVNO SPAJANJE...' : 'ČEKAM PRIJATELJA...';
+      status.textContent = HOST_STATUS[state] ?? HOST_STATUS.waiting;
+    },
+    onDiag(text) {
+      diag.textContent = text;
     },
     onConnect(net) {
       handedOff = true;
@@ -255,9 +267,11 @@ function joinScreen(root, code) {
       <p class="muted" id="hint" hidden>Neka prijatelj otvori Gamebag<br>i ostane na ekranu s pozivnicom.</p>
       <button class="btn" id="retry" hidden>POKUŠAJ PONOVNO</button>
       <button class="btn btn-ghost" id="back">ODUSTANI</button>
+      <p class="diag" id="diag"></p>
     </main>`,
   );
   const status = $('#status');
+  const diag = $('#diag');
   let net = null;
   let started = false;
 
@@ -288,6 +302,9 @@ function joinScreen(root, code) {
         sound.join();
         startGame(game, { mode: 'online', variant: msg.variant, net: connection, isHost: false });
       });
+    },
+    onDiag(text) {
+      diag.textContent = text;
     },
     onError: showError,
   });

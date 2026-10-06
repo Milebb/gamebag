@@ -12,6 +12,32 @@ const JOIN_RETRY_MS = 3000;
 const KEPT_ATTEMPTS = 2;
 const KEEPALIVE_MS = 3000;
 const STUCK_MS = 15000;
+const ICE_OPEN_MS = 15000;
+
+// PeerJS's bundled TURN hosts no longer exist and no free public TURN relay works without an
+// account, so phones behind carrier-grade NAT can only connect once credentials from a TURN
+// provider (e.g. Metered, whose relay host is preset here) are filled in.
+const TURN = { host: 'global.relay.metered.ca', username: '', credential: '' };
+
+export const ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478', 'stun:stun1.l.google.com:19302'] },
+  ...(TURN.username
+    ? [
+        {
+          urls: [
+            `turn:${TURN.host}:80`,
+            `turn:${TURN.host}:80?transport=tcp`,
+            `turn:${TURN.host}:443`,
+            `turns:${TURN.host}:443?transport=tcp`,
+          ],
+          username: TURN.username,
+          credential: TURN.credential,
+        },
+      ]
+    : []),
+];
+
+const PEER_OPTIONS = { config: { iceServers: ICE_SERVERS } };
 
 export function normalizeCode(raw) {
   return String(raw ?? '')
@@ -44,9 +70,107 @@ function describeError(err) {
       return 'Ovaj preglednik ne podržava online igru.';
     case 'timeout':
       return 'Spajanje traje predugo. Pokušaj ponovno.';
+    case 'ice-failed':
+    case 'negotiation-failed':
+      return 'Ne mogu se spojiti s prijateljem. Mreža blokira izravnu vezu. Pokušajte oboje biti na istom Wi-Fi-ju.';
     default:
       return 'Greška u spajanju. Pokušaj ponovno.';
   }
+}
+
+async function describeRoute(pc) {
+  try {
+    const stats = await pc.getStats();
+    let pair = null;
+    stats.forEach((s) => {
+      if (s.type === 'transport' && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId);
+    });
+    if (!pair) {
+      stats.forEach((s) => {
+        if (!pair && s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
+      });
+    }
+    if (!pair) return '';
+    const local = stats.get(pair.localCandidateId)?.candidateType;
+    const remote = stats.get(pair.remoteCandidateId)?.candidateType;
+    const relayed = local === 'relay' || remote === 'relay';
+    return `veza: ${local}-${remote}${relayed ? ' (TURN)' : ''}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Follows the ICE negotiation of a not-yet-open connection: reports progress as a short
+ * diagnostic line and calls onFail if ICE fails or the channel doesn't open within
+ * ICE_OPEN_MS of the offer/answer exchange.
+ */
+function watchIce(conn, { onDiag, onFail }) {
+  const pc = conn.peerConnection;
+  if (!pc) return;
+  const states = [];
+  const types = new Set();
+  let route = '';
+  let timer = null;
+  let stopped = false;
+
+  const report = () => {
+    const parts = [`ICE: ${states.join(' → ') || 'čekam'}`];
+    if (route) parts.push(route);
+    parts.push(`kandidati: ${[...types].join(',') || '-'}`);
+    if (!TURN.username) parts.push('bez TURN-a');
+    onDiag?.(parts.join(' · '));
+  };
+  const record = (state) => {
+    if (states[states.length - 1] === state) return;
+    states.push(state);
+    report();
+  };
+  const stop = () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+  const fail = () => {
+    if (stopped) return;
+    stop();
+    onFail();
+  };
+  const startTimer = () => {
+    if (timer || stopped) return;
+    report();
+    timer = setTimeout(() => {
+      record('isteklo');
+      fail();
+    }, ICE_OPEN_MS);
+  };
+
+  pc.addEventListener('icecandidate', (event) => {
+    const type = event.candidate?.type || event.candidate?.candidate.match(/ typ (\w+)/)?.[1];
+    if (type && !types.has(type)) {
+      types.add(type);
+      report();
+    }
+  });
+  pc.addEventListener('signalingstatechange', () => pc.remoteDescription && startTimer());
+  pc.addEventListener('iceconnectionstatechange', () => {
+    const state = pc.iceConnectionState;
+    if (state === 'closed') return;
+    record(state);
+    if (state === 'failed') fail();
+    if (state === 'connected' || state === 'completed') {
+      describeRoute(pc).then((text) => {
+        route = text;
+        report();
+      });
+    }
+  });
+  conn.on('open', stop);
+  // PeerJS reports ICE failure as a connection error and closes the peer connection right away.
+  conn.on('error', () => {
+    if (pc.iceConnectionState === 'failed') record('failed');
+    fail();
+  });
+  if (pc.remoteDescription) startTimer();
 }
 
 /**
@@ -112,18 +236,19 @@ function wrapConnection(conn, peer) {
   };
 }
 
-export function createRoom({ onCode, onStatus, onConnect, onError }) {
+export function createRoom({ onCode, onStatus, onConnect, onError, onDiag }) {
   let peer = null;
   let code = null;
   let cancelled = false;
   let connected = false;
   let retries = 0;
   let pendingSince = 0;
+  const pending = new Set();
 
   const active = () => !cancelled && !connected;
 
   function open(id) {
-    const current = new Peer(PREFIX + id);
+    const current = new Peer(PREFIX + id, PEER_OPTIONS);
     peer = current;
     pendingSince = Date.now();
 
@@ -136,10 +261,26 @@ export function createRoom({ onCode, onStatus, onConnect, onError }) {
 
     // Offers queued on the server while the room was gone arrive stale and never open,
     // so the first connection that actually opens wins.
+    // A guest whose network blocks the direct link never opens; drop it and keep waiting so
+    // the guest can retry.
     current.on('connection', (conn) => {
+      if (current !== peer || !active()) return;
+      pending.add(conn);
+      onStatus('connecting');
+      watchIce(conn, {
+        onDiag,
+        onFail() {
+          pending.delete(conn);
+          conn.close();
+          if (current === peer && active() && !pending.size) onStatus('failed');
+        },
+      });
       conn.on('open', () => {
+        pending.delete(conn);
         if (current !== peer || !active()) return conn.close();
         connected = true;
+        pending.forEach((other) => other.close());
+        pending.clear();
         stopWatching();
         onConnect(wrapConnection(conn, current));
       });
@@ -197,13 +338,13 @@ export function createRoom({ onCode, onStatus, onConnect, onError }) {
   };
 }
 
-export function joinRoom(code, { onWaiting, onConnect, onError }) {
+export function joinRoom(code, { onWaiting, onConnect, onError, onDiag }) {
   let cancelled = false;
   let done = false;
   let attempts = [];
   let knocker = null;
   const deadline = Date.now() + HOST_WAIT_MS;
-  const peer = new Peer();
+  const peer = new Peer(PEER_OPTIONS);
   const timer = setTimeout(() => fail({ type: 'timeout' }), JOIN_TIMEOUT_MS);
 
   const answered = () => attempts.some((conn) => conn.peerConnection?.remoteDescription);
@@ -226,6 +367,12 @@ export function joinRoom(code, { onWaiting, onConnect, onError }) {
     const conn = peer.connect(PREFIX + code, { reliable: true, serialization: 'json' });
     attempts.push(conn);
     if (attempts.length > KEPT_ATTEMPTS) attempts.shift().close();
+    watchIce(conn, {
+      onDiag(text) {
+        if (conn === attempts[attempts.length - 1] || conn.peerConnection?.remoteDescription) onDiag?.(text);
+      },
+      onFail: () => attempts.includes(conn) && fail({ type: 'ice-failed' }),
+    });
     conn.on('open', () => {
       if (cancelled || done) return;
       stop();
