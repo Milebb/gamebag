@@ -6,7 +6,12 @@ const CODE_LENGTH = 5;
 const HEARTBEAT_MS = 2000;
 // Generous because mobile browsers throttle timers while the app is briefly in the background.
 const PEER_TIMEOUT_MS = 15000;
-const JOIN_TIMEOUT_MS = 30000;
+const HOST_WAIT_MS = 60000;
+const JOIN_TIMEOUT_MS = HOST_WAIT_MS + 15000;
+const JOIN_RETRY_MS = 3000;
+const KEPT_ATTEMPTS = 2;
+const KEEPALIVE_MS = 3000;
+const STUCK_MS = 15000;
 
 export function normalizeCode(raw) {
   return String(raw ?? '')
@@ -28,6 +33,8 @@ function describeError(err) {
   switch (err?.type) {
     case 'peer-unavailable':
       return 'Soba nije pronađena. Provjeri kod.';
+    case 'host-missing':
+      return 'Prijatelj nije u sobi. Neka otvori Gamebag na ekranu s pozivnicom, pa pokušaj ponovno.';
     case 'network':
     case 'server-error':
     case 'socket-error':
@@ -105,95 +112,150 @@ function wrapConnection(conn, peer) {
   };
 }
 
-export function createRoom({ onCode, onConnect, onError }) {
+export function createRoom({ onCode, onStatus, onConnect, onError }) {
   let peer = null;
+  let code = null;
   let cancelled = false;
   let connected = false;
   let retries = 0;
+  let pendingSince = 0;
 
-  function open() {
-    const code = randomCode();
-    peer = new Peer(PREFIX + code);
+  const active = () => !cancelled && !connected;
 
-    peer.on('open', () => {
-      if (!cancelled) onCode(code);
+  function open(id) {
+    const current = new Peer(PREFIX + id);
+    peer = current;
+    pendingSince = Date.now();
+
+    current.on('open', () => {
+      if (current !== peer || !active()) return;
+      if (code) return onStatus('waiting');
+      code = id;
+      onCode(code);
     });
 
-    peer.on('connection', (conn) => {
-      if (connected || cancelled) {
-        conn.on('open', () => conn.close());
-        return;
-      }
-      connected = true;
-      document.removeEventListener('visibilitychange', onVisible);
-      conn.on('open', () => onConnect(wrapConnection(conn, peer)));
+    // Offers queued on the server while the room was gone arrive stale and never open,
+    // so the first connection that actually opens wins.
+    current.on('connection', (conn) => {
+      conn.on('open', () => {
+        if (current !== peer || !active()) return conn.close();
+        connected = true;
+        stopWatching();
+        onConnect(wrapConnection(conn, current));
+      });
     });
 
-    peer.on('disconnected', () => {
-      if (!cancelled && !connected && !peer.destroyed) peer.reconnect();
+    current.on('disconnected', () => {
+      if (current === peer && active() && code) onStatus('reconnecting');
     });
 
-    peer.on('error', (err) => {
-      if (cancelled || connected) return;
+    current.on('error', (err) => {
+      if (current !== peer || !active()) return;
+      if (code) return onStatus('reconnecting');
       if (err.type === 'unavailable-id' && retries++ < 5) {
-        peer.destroy();
-        open();
+        current.destroy();
+        open(randomCode());
         return;
       }
       onError(describeError(err));
     });
   }
 
-  // The host usually leaves for WhatsApp to send the invite; mobile browsers may drop
-  // the signaling connection meanwhile, so re-register the room on return.
-  const onVisible = () => {
-    if (document.visibilityState === 'visible' && !cancelled && !connected && peer?.disconnected && !peer.destroyed) {
+  // The host usually leaves for WhatsApp to send the invite and mobile browsers may drop
+  // the signaling connection meanwhile; the room must come back under the same code,
+  // because the invite link has already been sent.
+  function ensureRegistered() {
+    if (!active() || !code) return;
+    if (peer.destroyed) {
+      open(code);
+    } else if (peer.disconnected) {
+      pendingSince = Date.now();
       peer.reconnect();
+    } else if (!peer.open && Date.now() - pendingSince > STUCK_MS) {
+      peer.destroy();
+      open(code);
     }
-  };
+  }
+
+  const onVisible = () => document.visibilityState === 'visible' && ensureRegistered();
+  const keepAlive = setInterval(ensureRegistered, KEEPALIVE_MS);
   document.addEventListener('visibilitychange', onVisible);
 
-  open();
+  function stopWatching() {
+    clearInterval(keepAlive);
+    document.removeEventListener('visibilitychange', onVisible);
+  }
+
+  open(randomCode());
 
   return {
     cancel() {
       cancelled = true;
-      document.removeEventListener('visibilitychange', onVisible);
+      stopWatching();
       peer?.destroy();
     },
   };
 }
 
-export function joinRoom(code, { onConnect, onError }) {
+export function joinRoom(code, { onWaiting, onConnect, onError }) {
   let cancelled = false;
   let done = false;
+  let attempts = [];
+  let knocker = null;
+  const deadline = Date.now() + HOST_WAIT_MS;
   const peer = new Peer();
   const timer = setTimeout(() => fail({ type: 'timeout' }), JOIN_TIMEOUT_MS);
 
-  function fail(err) {
-    if (cancelled || done) return;
+  const answered = () => attempts.some((conn) => conn.peerConnection?.remoteDescription);
+
+  function stop() {
     done = true;
     clearTimeout(timer);
+    clearInterval(knocker);
+  }
+
+  function fail(err) {
+    if (cancelled || done) return;
+    stop();
     peer.destroy();
     onError(describeError(err));
   }
 
-  peer.on('open', () => {
+  function connect() {
+    if (cancelled || done) return;
     const conn = peer.connect(PREFIX + code, { reliable: true, serialization: 'json' });
+    attempts.push(conn);
+    if (attempts.length > KEPT_ATTEMPTS) attempts.shift().close();
     conn.on('open', () => {
       if (cancelled || done) return;
-      done = true;
-      clearTimeout(timer);
+      stop();
+      attempts.filter((other) => other !== conn).forEach((other) => other.close());
+      attempts = [];
       onConnect(wrapConnection(conn, peer));
     });
-    conn.on('error', fail);
-  });
-  peer.on('error', fail);
+    conn.on('error', (err) => attempts.includes(conn) && fail(err));
+  }
 
+  // The host may still be in WhatsApp with the room temporarily gone, so keep knocking
+  // until it answers; the server reports only the first knock on a missing room.
+  function knockAgain() {
+    if (answered()) return;
+    if (Date.now() >= deadline) return fail({ type: 'host-missing' });
+    onWaiting();
+    connect();
+  }
+
+  peer.on('open', () => {
+    if (knocker) return;
+    connect();
+    knocker = setInterval(knockAgain, JOIN_RETRY_MS);
+  });
+  peer.on('error', (err) => (err.type === 'peer-unavailable' ? onWaiting() : fail(err)));
   return {
     cancel() {
       cancelled = true;
       clearTimeout(timer);
+      clearInterval(knocker);
       if (!done) peer.destroy();
     },
   };

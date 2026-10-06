@@ -217,6 +217,9 @@ function hostScreen(root, game, option) {
         qr.hidden = false;
       });
     },
+    onStatus(state) {
+      status.textContent = state === 'reconnecting' ? 'PONOVNO SPAJANJE...' : 'ČEKAM PRIJATELJA...';
+    },
     onConnect(net) {
       handedOff = true;
       sound.join();
@@ -249,6 +252,8 @@ function joinScreen(root, code) {
       <h2>PRIDRUŽIVANJE</h2>
       <div class="room-code">${code}</div>
       <p class="status blink" id="status">SPAJAM SE...</p>
+      <p class="muted" id="hint" hidden>Neka prijatelj otvori Gamebag<br>i ostane na ekranu s pozivnicom.</p>
+      <button class="btn" id="retry" hidden>POKUŠAJ PONOVNO</button>
       <button class="btn btn-ghost" id="back">ODUSTANI</button>
     </main>`,
   );
@@ -260,12 +265,19 @@ function joinScreen(root, code) {
     status.classList.remove('blink');
     status.classList.add('status-error');
     status.textContent = message;
+    $('#hint').hidden = true;
+    $('#retry').hidden = false;
     $('#back').textContent = 'NATRAG';
   };
 
   const attempt = joinRoom(code, {
+    onWaiting() {
+      status.textContent = 'ČEKAM PRIJATELJA...';
+      $('#hint').hidden = false;
+    },
     onConnect(connection) {
       net = connection;
+      $('#hint').hidden = true;
       status.textContent = 'SPOJENO! ČEKAM DOMAĆINA...';
       connection.onClose(() => !started && showError('Veza je prekinuta.'));
       connection.setHandler((msg) => {
@@ -280,6 +292,7 @@ function joinScreen(root, code) {
     onError: showError,
   });
 
+  onClick($('#retry'), () => show(joinScreen, code));
   onClick($('#back'), () => show(homeScreen));
 
   return () => {
