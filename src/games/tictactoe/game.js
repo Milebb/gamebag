@@ -187,6 +187,7 @@ export function start(root, { mode, difficulty = 'medium', net = null, isHost = 
       }
     });
     net.onClose(opponentLeft);
+    if (isHost) net.onResume(() => net.send({ t: 'state', state }));
     window.addEventListener('pagehide', sayBye);
     if (isHost) net.send({ t: 'state', state });
   }

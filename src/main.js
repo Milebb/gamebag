@@ -30,7 +30,18 @@ function onClick(element, handler) {
 
 function startGame(game, options) {
   const back = options.mode === 'online' ? () => show(homeScreen) : () => show(modeScreen, game);
-  show((root) => game.start(root, { ...options, onExit: back }));
+  show((root) => {
+    const stop = game.start(root, { ...options, onExit: back });
+    if (options.mode !== 'online') return stop;
+    const diag = document.createElement('p');
+    diag.className = 'diag diag-corner';
+    root.append(diag);
+    const timer = setInterval(() => (diag.textContent = options.net.describe()), 1000);
+    return () => {
+      clearInterval(timer);
+      stop?.();
+    };
+  });
 }
 
 function homeScreen(root) {

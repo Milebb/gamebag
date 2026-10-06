@@ -4,8 +4,11 @@ const PREFIX = 'gamebag-hr-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 5;
 const HEARTBEAT_MS = 2000;
-// Generous because mobile browsers throttle timers while the app is briefly in the background.
-const PEER_TIMEOUT_MS = 15000;
+// Generous because mobile browsers throttle timers while the app is briefly in the background,
+// and the guest needs time to redial a stalled connection.
+const PEER_TIMEOUT_MS = 25000;
+const STALL_MS = 5000;
+const REDIAL_MS = 5000;
 const HOST_WAIT_MS = 60000;
 const JOIN_TIMEOUT_MS = HOST_WAIT_MS + 15000;
 const JOIN_RETRY_MS = 3000;
@@ -38,6 +41,7 @@ export const ICE_SERVERS = [
 ];
 
 const PEER_OPTIONS = { config: { iceServers: ICE_SERVERS } };
+const CONNECT_OPTIONS = { reliable: true, serialization: 'json' };
 
 export function normalizeCode(raw) {
   return String(raw ?? '')
@@ -48,6 +52,10 @@ export function normalizeCode(raw) {
 
 export function isValidCode(code) {
   return code.length === CODE_LENGTH && [...code].every((ch) => ALPHABET.includes(ch));
+}
+
+function randomToken() {
+  return [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function randomCode() {
@@ -178,14 +186,24 @@ function watchIce(conn, { onDiag, onFail, onAnswer }) {
 
 /**
  * Wraps a PeerJS data connection in a tiny message channel:
- * send(msg), setHandler(fn), onClose(fn), close().
+ * send(msg), setHandler(fn), onClose(fn), onResume(fn), describe(), close().
  * Messages that arrive before a handler is set are queued.
+ *
+ * A WebRTC connection can silently stop delivering in one direction, so a dropped or silent
+ * connection is not the end: the guest (which gets `redial`) dials a fresh one, the host
+ * announces it with 'pick' and both sides move the channel onto it via replace(). onResume
+ * lets the game resend whatever may have been lost. Only a long silence ends the channel.
  */
-function wrapConnection(conn, peer, queue = []) {
+function wrapConnection(first, { queue = [], redial = null, dispose }) {
+  let conn = null;
   let handler = null;
   let closeHandler = null;
+  let resumeHandler = null;
   let closed = false;
   let lastSeen = Date.now();
+  let lastRedial = 0;
+  let resumes = 0;
+  let route = '';
 
   const deliver = () => {
     while (handler && queue.length) handler(queue.shift());
@@ -195,6 +213,25 @@ function wrapConnection(conn, peer, queue = []) {
     if (!closed && conn.open) conn.send(msg);
   };
 
+  const onData = (msg) => {
+    lastSeen = Date.now();
+    if (!msg || msg.t === 'ping' || msg.t === 'pick') return;
+    queue.push(msg);
+    deliver();
+  };
+
+  function attach(next) {
+    if (conn) {
+      conn.off('data', onData);
+      conn.close();
+    }
+    conn = next;
+    lastSeen = Date.now();
+    route = '';
+    conn.on('data', onData);
+    if (conn.peerConnection) describeRoute(conn.peerConnection).then((text) => (route = text));
+  }
+
   const finish = () => {
     if (closed) return;
     closed = true;
@@ -203,18 +240,16 @@ function wrapConnection(conn, peer, queue = []) {
   };
 
   const heartbeat = setInterval(() => {
-    if (Date.now() - lastSeen > PEER_TIMEOUT_MS) finish();
-    else send({ t: 'ping' });
+    const silence = Date.now() - lastSeen;
+    if (silence > PEER_TIMEOUT_MS) return finish();
+    if (redial && silence > STALL_MS && Date.now() - lastRedial > REDIAL_MS) {
+      lastRedial = Date.now();
+      redial();
+    }
+    send({ t: 'ping' });
   }, HEARTBEAT_MS);
 
-  conn.on('data', (msg) => {
-    lastSeen = Date.now();
-    if (!msg || msg.t === 'ping' || msg.t === 'pick') return;
-    queue.push(msg);
-    deliver();
-  });
-  conn.on('close', finish);
-  conn.on('error', finish);
+  attach(first);
 
   return {
     send,
@@ -226,13 +261,28 @@ function wrapConnection(conn, peer, queue = []) {
       closeHandler = fn;
       if (closed) fn();
     },
+    onResume(fn) {
+      resumeHandler = fn;
+    },
+    replace(next) {
+      if (closed) return next.close();
+      attach(next);
+      resumes++;
+      resumeHandler?.();
+    },
+    describe() {
+      const parts = [`zadnja poruka: ${((Date.now() - lastSeen) / 1000).toFixed(1)}s`];
+      if (route) parts.push(route);
+      if (resumes) parts.push(`obnove: ${resumes}`);
+      return parts.join(' · ');
+    },
     close() {
       closed = true;
       clearInterval(heartbeat);
       // Give a final message (e.g. "bye") a moment to flush.
       setTimeout(() => {
         conn.close();
-        peer.destroy();
+        dispose();
       }, 300);
     },
   };
@@ -245,6 +295,8 @@ export function createRoom({ onCode, onStatus, onConnect, onError, onDiag }) {
   let connected = false;
   let retries = 0;
   let pendingSince = 0;
+  let session = null;
+  let channel = null;
   const pending = new Set();
 
   const active = () => !cancelled && !connected;
@@ -266,7 +318,8 @@ export function createRoom({ onCode, onStatus, onConnect, onError, onDiag }) {
     // which is the only connection the guest adopts. A guest whose network blocks the direct
     // link never opens; drop it and keep waiting so the guest can retry.
     current.on('connection', (conn) => {
-      if (current !== peer || !active()) return;
+      if (current !== peer || cancelled) return;
+      if (connected) return resume(conn);
       pending.add(conn);
       onStatus('connecting');
       watchIce(conn, {
@@ -283,9 +336,10 @@ export function createRoom({ onCode, onStatus, onConnect, onError, onDiag }) {
         connected = true;
         pending.forEach((other) => other.close());
         pending.clear();
-        stopWatching();
-        conn.send({ t: 'pick' });
-        onConnect(wrapConnection(conn, current));
+        session = randomToken();
+        conn.send({ t: 'pick', sid: session });
+        channel = wrapConnection(conn, { dispose: cancel });
+        onConnect(channel);
       });
     });
 
@@ -308,37 +362,44 @@ export function createRoom({ onCode, onStatus, onConnect, onError, onDiag }) {
   // The host usually leaves for WhatsApp to send the invite and mobile browsers may drop
   // the signaling connection meanwhile; the room must come back under the same code,
   // because the invite link has already been sent.
+  // During the game the room stays registered so the guest can redial a stalled connection,
+  // but the peer is never destroyed then because that would close the game connection.
   function ensureRegistered() {
-    if (!active() || !code) return;
+    if (cancelled || !code) return;
     if (peer.destroyed) {
       open(code);
     } else if (peer.disconnected) {
       pendingSince = Date.now();
       peer.reconnect();
-    } else if (!peer.open && Date.now() - pendingSince > STUCK_MS) {
+    } else if (!connected && !peer.open && Date.now() - pendingSince > STUCK_MS) {
       peer.destroy();
       open(code);
     }
+  }
+
+  function resume(conn) {
+    if (conn.metadata?.resume !== session) return conn.close();
+    conn.on('open', () => {
+      if (cancelled) return conn.close();
+      conn.send({ t: 'pick', sid: session });
+      channel.replace(conn);
+    });
   }
 
   const onVisible = () => document.visibilityState === 'visible' && ensureRegistered();
   const keepAlive = setInterval(ensureRegistered, KEEPALIVE_MS);
   document.addEventListener('visibilitychange', onVisible);
 
-  function stopWatching() {
+  function cancel() {
+    cancelled = true;
     clearInterval(keepAlive);
     document.removeEventListener('visibilitychange', onVisible);
+    peer?.destroy();
   }
 
   open(randomCode());
 
-  return {
-    cancel() {
-      cancelled = true;
-      stopWatching();
-      peer?.destroy();
-    },
-  };
+  return { cancel };
 }
 
 export function joinRoom(code, { onWaiting, onConnect, onError, onDiag }) {
@@ -378,12 +439,34 @@ export function joinRoom(code, { onWaiting, onConnect, onError, onDiag }) {
     stop();
     attempts.filter((other) => other !== conn).forEach((other) => other.close());
     attempts = [];
-    onConnect(wrapConnection(conn, peer, firstMessage.t === 'pick' ? [] : [firstMessage]));
+    const picked = firstMessage.t === 'pick';
+    const session = picked ? firstMessage.sid : null;
+
+    // The host switches to whichever redial opens last and announces each switch with
+    // 'pick', so following every 'pick' keeps both sides on the same connection.
+    function redial() {
+      if (peer.destroyed) return;
+      if (peer.disconnected) return peer.reconnect();
+      const next = peer.connect(PREFIX + code, { ...CONNECT_OPTIONS, metadata: { resume: session } });
+      const onPick = (msg) => {
+        if (msg?.t !== 'pick') return;
+        next.off('data', onPick);
+        channel.replace(next);
+      };
+      next.on('data', onPick);
+    }
+
+    const channel = wrapConnection(conn, {
+      queue: picked ? [] : [firstMessage],
+      redial: session ? redial : null,
+      dispose: () => peer.destroy(),
+    });
+    onConnect(channel);
   }
 
   function connect() {
     if (cancelled || done) return;
-    const conn = peer.connect(PREFIX + code, { reliable: true, serialization: 'json' });
+    const conn = peer.connect(PREFIX + code, CONNECT_OPTIONS);
     attempts.push(conn);
     const unanswered = attempts.filter((other) => !answered.has(other));
     if (unanswered.length > KEPT_ATTEMPTS) drop(unanswered[0]);
@@ -435,7 +518,11 @@ export function joinRoom(code, { onWaiting, onConnect, onError, onDiag }) {
     connect();
     knocker = setInterval(knockAgain, JOIN_RETRY_MS);
   });
-  peer.on('error', (err) => (err.type === 'peer-unavailable' ? onWaiting() : fail(err)));
+  peer.on('error', (err) => {
+    if (done) return;
+    if (err.type === 'peer-unavailable') onWaiting();
+    else fail(err);
+  });
   return {
     cancel() {
       cancelled = true;
