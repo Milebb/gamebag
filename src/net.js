@@ -6,7 +6,7 @@ const CODE_LENGTH = 5;
 const HEARTBEAT_MS = 2000;
 // Generous because mobile browsers throttle timers while the app is briefly in the background.
 const PEER_TIMEOUT_MS = 15000;
-const JOIN_TIMEOUT_MS = 20000;
+const JOIN_TIMEOUT_MS = 30000;
 
 export function normalizeCode(raw) {
   return String(raw ?? '')
@@ -125,6 +125,7 @@ export function createRoom({ onCode, onConnect, onError }) {
         return;
       }
       connected = true;
+      document.removeEventListener('visibilitychange', onVisible);
       conn.on('open', () => onConnect(wrapConnection(conn, peer)));
     });
 
@@ -143,11 +144,21 @@ export function createRoom({ onCode, onConnect, onError }) {
     });
   }
 
+  // The host usually leaves for WhatsApp to send the invite; mobile browsers may drop
+  // the signaling connection meanwhile, so re-register the room on return.
+  const onVisible = () => {
+    if (document.visibilityState === 'visible' && !cancelled && !connected && peer?.disconnected && !peer.destroyed) {
+      peer.reconnect();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisible);
+
   open();
 
   return {
     cancel() {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
       peer?.destroy();
     },
   };

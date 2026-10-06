@@ -53,6 +53,7 @@ function homeScreen(root) {
           )
           .join('')}
       </nav>
+      <button class="btn btn-ghost" id="join">IMAM KOD OD PRIJATELJA</button>
       <footer class="footer">
         <button class="btn btn-small btn-ghost" id="mute"></button>
       </footer>
@@ -62,6 +63,7 @@ function homeScreen(root) {
   root.querySelectorAll('.game-btn').forEach((button) => {
     onClick(button, () => show(modeScreen, getGame(button.dataset.id)));
   });
+  onClick($('#join'), () => show(codeScreen));
 
   const mute = $('#mute');
   const label = () => (mute.textContent = isMuted() ? 'ZVUK: ISKLJUČEN' : 'ZVUK: UKLJUČEN');
@@ -92,11 +94,11 @@ function modeScreen(root, game) {
     </main>`,
   );
   root.querySelectorAll('[data-mode]').forEach((button) => {
-    const { mode, variant } = modes[Number(button.dataset.mode)];
+    const option = modes[Number(button.dataset.mode)];
     onClick(button, () => {
-      if (mode === 'ai') show(difficultyScreen, game);
-      else if (mode === 'local') startGame(game, { mode: 'local' });
-      else show(onlineScreen, game, variant);
+      if (option.mode === 'ai') show(difficultyScreen, game);
+      else if (option.mode === 'local') startGame(game, { mode: 'local' });
+      else show(hostScreen, game, option);
     });
   });
   onClick($('#back'), () => show(homeScreen));
@@ -121,14 +123,12 @@ function difficultyScreen(root, game) {
   onClick($('#back'), () => show(modeScreen, game));
 }
 
-function onlineScreen(root, game, variant) {
+function codeScreen(root) {
   const $ = render(
     root,
     `<main class="screen">
-      <h2>ONLINE</h2>
-      <p class="muted">Napravi sobu i pošalji kod prijatelju,<br>ili upiši kod koji si dobio.</p>
-      <button class="btn btn-primary" id="host">NAPRAVI SOBU</button>
-      <div class="divider">- ILI -</div>
+      <h2>PRIDRUŽI SE</h2>
+      <p class="muted">Upiši kod sobe koji ti je<br>prijatelj poslao.</p>
       <form class="join-form" id="join">
         <label for="code">KOD SOBE</label>
         <input id="code" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE" />
@@ -150,15 +150,15 @@ function onlineScreen(root, game, variant) {
     }
     show(joinScreen, code);
   });
-  onClick($('#host'), () => show(hostScreen, game, variant));
-  onClick($('#back'), () => show(modeScreen, game));
+  onClick($('#back'), () => show(homeScreen));
+  input.focus();
 }
 
-async function shareRoom(code, link, flash) {
-  const text = `Igraj sa mnom u Gamebagu! Kod sobe: ${code}`;
+async function shareRoom(text, link, flash) {
   if (navigator.share) {
     try {
-      await navigator.share({ title: 'Gamebag', text, url: link });
+      // Some apps glue a separate `url` onto the text without a space, breaking the link.
+      await navigator.share({ text: `${text}\n${link}` });
       return;
     } catch (err) {
       if (err.name === 'AbortError') return;
@@ -172,37 +172,42 @@ async function shareRoom(code, link, flash) {
   }
 }
 
-function hostScreen(root, game, variant) {
+function hostScreen(root, game, option) {
+  const { variant } = option;
   const $ = render(
     root,
     `<main class="screen">
-      <h2>TVOJA SOBA</h2>
-      <p class="muted">Pošalji prijatelju kod ili link,<br>ili neka skenira QR kod.</p>
-      <div class="room-code" id="code">· · · · ·</div>
+      <h2>POZOVI PRIJATELJA</h2>
+      <p class="muted">${game.name}${option.subtitle ? ` · ${option.subtitle}` : ''}</p>
+      <a class="btn btn-whatsapp" id="whatsapp" target="_blank" rel="noopener" aria-disabled="true">POŠALJI NA WHATSAPP</a>
+      <button class="btn" id="share" disabled>POŠALJI DRUGAČIJE</button>
+      <p class="status blink" id="status">PRIPREMAM SOBU...</p>
+      <p class="muted">Nakon slanja vrati se ovdje.<br>Igra kreće čim prijatelj klikne link.</p>
+      <div class="divider">- ILI NEKA SKENIRA / UPIŠE KOD -</div>
       <img class="qr" id="qr" alt="QR kod sobe" hidden />
-      <button class="btn btn-primary" id="share" disabled>PODIJELI LINK</button>
-      <p class="link" id="link"></p>
-      <p class="status blink" id="status">SPAJANJE NA SERVER...</p>
+      <div class="room-code" id="code">· · · · ·</div>
       <button class="btn btn-ghost" id="back">ODUSTANI</button>
     </main>`,
   );
   const status = $('#status');
   const shareBtn = $('#share');
+  const whatsapp = $('#whatsapp');
   let handedOff = false;
-  let roomCode = null;
+  let invite = null;
   let roomLink = null;
 
   const flash = (message) => {
     shareBtn.textContent = message;
-    setTimeout(() => (shareBtn.textContent = 'PODIJELI LINK'), 2000);
+    setTimeout(() => (shareBtn.textContent = 'POŠALJI DRUGAČIJE'), 2000);
   };
 
   const room = createRoom({
     onCode(code) {
-      roomCode = code;
       roomLink = `${location.origin}${location.pathname}?soba=${code}`;
+      invite = `${option.invite ?? game.invite} Klikni link i odmah igramo:`;
       $('#code').textContent = code;
-      $('#link').textContent = roomLink;
+      whatsapp.href = `https://wa.me/?text=${encodeURIComponent(`${invite}\n${roomLink}`)}`;
+      whatsapp.removeAttribute('aria-disabled');
       shareBtn.disabled = false;
       status.textContent = 'ČEKAM PRIJATELJA...';
       QRCode.toDataURL(roomLink, { margin: 1, width: 360 }).then((url) => {
@@ -225,8 +230,12 @@ function hostScreen(root, game, variant) {
     },
   });
 
-  shareBtn.addEventListener('click', () => roomCode && shareRoom(roomCode, roomLink, flash));
-  onClick($('#back'), () => show(onlineScreen, game, variant));
+  whatsapp.addEventListener('click', (event) => {
+    if (!roomLink) event.preventDefault();
+    else sound.click();
+  });
+  shareBtn.addEventListener('click', () => roomLink && shareRoom(invite, roomLink, flash));
+  onClick($('#back'), () => show(modeScreen, game));
 
   return () => {
     if (!handedOff) room.cancel();

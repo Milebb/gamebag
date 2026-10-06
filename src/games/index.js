@@ -6,7 +6,7 @@ import { pixelSvg, ICONS } from '../pixel.js';
 export const DEFAULT_MODES = [
   { mode: 'ai', label: 'SAM PROTIV RAČUNALA' },
   { mode: 'local', label: 'DVOJE NA JEDNOM MOBITELU' },
-  { mode: 'online', label: 'ONLINE S PRIJATELJEM' },
+  { mode: 'online', label: 'POZOVI PRIJATELJA' },
 ];
 
 export const games = [
@@ -16,9 +16,18 @@ export const games = [
     icon: pixelSvg(ICONS.ttt),
     available: true,
     hardLabel: 'NEPOBJEDIVO',
+    invite: '❌⭕ Izazivam te na križić-kružić u Gamebagu!',
     start: startTicTacToe,
   },
-  { id: 'pong', name: 'PONG', icon: pixelSvg(ICONS.pong), available: true, hardLabel: 'TEŠKO', start: startPong },
+  {
+    id: 'pong',
+    name: 'PONG',
+    icon: pixelSvg(ICONS.pong),
+    available: true,
+    hardLabel: 'TEŠKO',
+    invite: '🏓 Izazivam te na Pong u Gamebagu!',
+    start: startPong,
+  },
   {
     id: 'invaders',
     name: 'SVEMIRCI',
@@ -28,8 +37,20 @@ export const games = [
     modes: [
       { mode: 'ai', label: 'SAM' },
       { mode: 'local', label: 'ZAJEDNO NA JEDNOM MOBITELU' },
-      { mode: 'online', variant: 'coop', label: 'ONLINE ZAJEDNO' },
-      { mode: 'online', variant: 'versus', label: 'ONLINE: BROD PROTIV SVEMIRACA' },
+      {
+        mode: 'online',
+        variant: 'coop',
+        label: 'POZOVI PRIJATELJA: ZAJEDNO',
+        subtitle: 'ZAJEDNO',
+        invite: '👾 Pomozi mi obraniti Zemlju od svemiraca u Gamebagu!',
+      },
+      {
+        mode: 'online',
+        variant: 'versus',
+        label: 'POZOVI PRIJATELJA: DVOBOJ',
+        subtitle: 'BROD PROTIV SVEMIRACA',
+        invite: '👾 Izazivam te na dvoboj u Svemircima: brod protiv svemiraca!',
+      },
     ],
     start: startInvaders,
   },
