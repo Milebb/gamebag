@@ -1,6 +1,10 @@
 import { start as startTicTacToe } from './tictactoe/game.js';
 import { start as startPong } from './pong/game.js';
 import { start as startInvaders } from './invaders/game.js';
+import { start as startConnect4 } from './connect4/game.js';
+import { start as startHockey } from './hockey/game.js';
+import { start as startSnake } from './snake/game.js';
+import { start as startBreakout } from './breakout/game.js';
 import { pixelSvg, ICONS } from '../pixel.js';
 
 export const DEFAULT_MODES = [
@@ -20,6 +24,15 @@ export const games = [
     start: startTicTacToe,
   },
   {
+    id: 'connect4',
+    name: '4 U NIZU',
+    icon: pixelSvg(ICONS.connect4),
+    available: true,
+    hardLabel: 'TEŠKO',
+    invite: '🔴🟡 Izazivam te na 4 u nizu u Gamebagu!',
+    start: startConnect4,
+  },
+  {
     id: 'pong',
     name: 'PONG',
     icon: pixelSvg(ICONS.pong),
@@ -27,6 +40,48 @@ export const games = [
     hardLabel: 'TEŠKO',
     invite: '🏓 Izazivam te na Pong u Gamebagu!',
     start: startPong,
+  },
+  {
+    id: 'hockey',
+    name: 'AIR HOCKEY',
+    icon: pixelSvg(ICONS.hockey),
+    available: true,
+    hardLabel: 'TEŠKO',
+    invite: '🏒 Izazivam te na Air Hockey u Gamebagu!',
+    start: startHockey,
+  },
+  {
+    id: 'snake',
+    name: 'ZMIJA',
+    icon: pixelSvg(ICONS.snake),
+    available: true,
+    hardLabel: 'BRZO',
+    modes: [
+      { mode: 'ai', label: 'SAM' },
+      { mode: 'local', label: 'DVOJE NA JEDNOM MOBITELU' },
+      { mode: 'online', label: 'POZOVI PRIJATELJA' },
+    ],
+    invite: '🐍 Izazivam te na Zmiju u Gamebagu!',
+    start: startSnake,
+  },
+  {
+    id: 'breakout',
+    name: 'CIGLE',
+    icon: pixelSvg(ICONS.breakout),
+    available: true,
+    hardLabel: 'TEŠKO',
+    modes: [
+      { mode: 'ai', label: 'SAM' },
+      { mode: 'local', label: 'ZAJEDNO NA JEDNOM MOBITELU' },
+      {
+        mode: 'online',
+        label: 'POZOVI PRIJATELJA: ZAJEDNO',
+        subtitle: 'ZAJEDNO',
+        invite: '🧱 Pomozi mi razbiti cigle u Gamebagu!',
+      },
+    ],
+    invite: '🧱 Igrajmo Cigle u Gamebagu!',
+    start: startBreakout,
   },
   {
     id: 'invaders',

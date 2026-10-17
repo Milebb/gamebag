@@ -63,4 +63,5 @@ export const sound = {
   shipHit: () => melody([300, 200, 120], 0.1, 0.12),
   wave: () => melody([523, 659, 784], 0.08, 0.1),
   fire: () => tone(880, 0.03, 0, 0.03),
+  eat: () => melody([520, 780], 0.05, 0.06),
 };

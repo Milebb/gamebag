@@ -94,6 +94,20 @@ h2 {
   color: var(--dim);
 }
 
+.home .menu {
+  gap: 10px;
+}
+
+.home .game-btn {
+  min-height: 56px;
+  padding: 10px 12px;
+}
+
+.home .pixel-icon {
+  width: 40px;
+  height: 40px;
+}
+
 .menu {
   width: 100%;
   display: flex;
@@ -515,4 +529,77 @@ h2 {
   line-height: 1.6;
   text-align: center;
   color: var(--dim);
+}
+
+/* 4 u nizu */
+
+.c4-board {
+  position: relative;
+  width: min(100%, 52dvh, 400px);
+  aspect-ratio: 7 / 6;
+  background: var(--panel);
+  border: 3px solid var(--line);
+  box-shadow: 0 0 24px rgba(90, 90, 138, 0.35);
+}
+
+.c4-cols {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.c4-col {
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.c4-col:hover {
+  background: rgba(255, 225, 77, 0.08);
+}
+
+.c4-board.locked .c4-col {
+  cursor: default;
+  pointer-events: none;
+}
+
+.c4-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: repeat(6, minmax(0, 1fr));
+  gap: 5px;
+  padding: 8px;
+  pointer-events: none;
+}
+
+.c4-cell {
+  min-width: 0;
+  min-height: 0;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: inset 0 0 0 2px rgba(90, 90, 138, 0.45);
+}
+
+.c4-cell.r {
+  background: var(--pink);
+  box-shadow: 0 0 10px rgba(255, 46, 136, 0.75);
+}
+
+.c4-cell.y {
+  background: var(--cyan);
+  box-shadow: 0 0 10px rgba(34, 228, 255, 0.75);
+}
+
+.c4-cell.placed {
+  animation: pop 0.2s steps(3);
+}
+
+.c4-cell.win {
+  animation: flash 0.4s steps(2) 3;
 }
